@@ -150,8 +150,18 @@ stages:
                         -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
                         -backend-config="key=$(TF_STATE_KEY)"
 
-                      # Purge any soft-deleted Key Vault to avoid name conflicts
-                      az keyvault purge --name "kv-threetier-${{ parameters.environment }}" 2>/dev/null || true
+                      # Purge any soft-deleted Key Vault from ALL possible locations
+                      KV_NAME="kv-threetier-${{ parameters.environment }}"
+                      echo "Checking for soft-deleted vault: $KV_NAME"
+                      DELETED_LOCATION=$(az keyvault list-deleted --query "[?name=='$KV_NAME'].properties.location" -o tsv 2>/dev/null || true)
+                      if [ -n "$DELETED_LOCATION" ]; then
+                        echo "Found soft-deleted vault in: $DELETED_LOCATION — purging..."
+                        az keyvault purge --name "$KV_NAME" --location "$DELETED_LOCATION" || true
+                        echo "Waiting 30s for purge to propagate..."
+                        sleep 30
+                      else
+                        echo "No soft-deleted vault found — proceeding."
+                      fi
 
                       terraform apply -auto-approve -input=false \
                         "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/tfplan"

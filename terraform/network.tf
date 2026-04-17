@@ -53,4 +53,6 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
   private_dns_zone_name = azurerm_private_dns_zone.postgres.name
   resource_group_name   = azurerm_resource_group.main.name
   virtual_network_id    = azurerm_virtual_network.main.id
+
+  depends_on = [azurerm_private_dns_zone.postgres]
 }
