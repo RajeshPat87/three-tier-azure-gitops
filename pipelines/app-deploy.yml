@@ -138,7 +138,6 @@ stages:
             deploy:
               steps:
                 - checkout: self
-                  persistCredentials: true
 
                 - task: Bash@3
                   displayName: "Update kustomization with new image tags"
@@ -162,24 +161,29 @@ stages:
                       cat kustomization.yaml
 
                 - task: Bash@3
-                  displayName: "Commit & push updated manifests"
+                  displayName: "Commit & push updated manifests to GitHub"
                   env:
-                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                    GITHUB_PAT: $(GITHUB_PAT)
                   inputs:
                     targetType: inline
                     script: |
                       set -euo pipefail
 
+                      GITHUB_REPO="https://x-access-token:${GITHUB_PAT}@github.com/RajeshPat87/three-tier-azure-gitops.git"
+
+                      # Clone fresh from GitHub (source of truth)
+                      WORK_DIR=$(mktemp -d)
+                      git clone --depth 1 "$GITHUB_REPO" "$WORK_DIR"
+
+                      # Copy updated kustomization overlay into the clone
+                      cp -r $(KUSTOMIZE_OVERLAY)/* "$WORK_DIR/k8s/overlays/${{ parameters.environment }}/"
+
+                      cd "$WORK_DIR"
                       git config user.email "ado-pipeline@dev.azure.com"
                       git config user.name "Azure DevOps Pipeline"
 
-                      # Use System.AccessToken for push auth (avoids GenericContribute permission issues)
-                      git -c http.extraheader="Authorization: Bearer $SYSTEM_ACCESSTOKEN" fetch origin main
-                      git checkout -B main origin/main
-
                       git add k8s/
 
-                      # Only commit if there are changes
                       if git diff --cached --quiet; then
                         echo "No manifest changes to commit."
                       else
@@ -189,9 +193,11 @@ stages:
                       Build: $(Build.BuildNumber)
                       Environment: ${{ parameters.environment }}"
 
-                        git -c http.extraheader="Authorization: Bearer $SYSTEM_ACCESSTOKEN" push origin HEAD:main
-                        echo "Manifests committed. ArgoCD will auto-sync shortly."
+                        git push origin main
+                        echo "Manifests pushed to GitHub. ArgoCD will auto-sync shortly."
                       fi
+
+                      rm -rf "$WORK_DIR"
 
   # ── Stage 4: Verify ArgoCD Sync ──────────────────────────────────────
   - stage: VerifySync
