@@ -34,7 +34,7 @@ variables:
   - name: TF_STATE_KEY
     value: "three-tier-${{ parameters.environment }}.tfstate"
   - name: ARM_USE_CLI
-    value: "true"
+    value: "false"
 
 pool:
   vmImage: "ubuntu-latest"
@@ -70,10 +70,17 @@ stages:
             displayName: "Terraform Init & Plan"
             inputs:
               azureSubscription: "azure-service-connection"
+              addSpnToEnvironment: true
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
+
+                # Export SP credentials for Terraform azurerm provider
+                export ARM_CLIENT_ID=$servicePrincipalId
+                export ARM_CLIENT_SECRET=$servicePrincipalKey
+                export ARM_TENANT_ID=$tenantId
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 
                 # Install Terraform
                 bash scripts/install-tool.sh terraform 1.7.0
@@ -121,10 +128,18 @@ stages:
                   displayName: "Terraform Apply"
                   inputs:
                     azureSubscription: "azure-service-connection"
+                    addSpnToEnvironment: true
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
                       set -euo pipefail
+
+                      # Export SP credentials for Terraform azurerm provider
+                      export ARM_CLIENT_ID=$servicePrincipalId
+                      export ARM_CLIENT_SECRET=$servicePrincipalKey
+                      export ARM_TENANT_ID=$tenantId
+                      export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
                       bash scripts/install-tool.sh terraform 1.7.0
 
                       cd terraform

@@ -64,10 +64,16 @@ stages:
             displayName: "Plan destruction"
             inputs:
               azureSubscription: "azure-service-connection"
+              addSpnToEnvironment: true
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
+
+                export ARM_CLIENT_ID=$servicePrincipalId
+                export ARM_CLIENT_SECRET=$servicePrincipalKey
+                export ARM_TENANT_ID=$tenantId
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 
                 bash scripts/install-tool.sh terraform 1.7.0
 
@@ -120,10 +126,17 @@ stages:
                   displayName: "Terraform Destroy"
                   inputs:
                     azureSubscription: "azure-service-connection"
+                    addSpnToEnvironment: true
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
                       set -euo pipefail
+
+                      export ARM_CLIENT_ID=$servicePrincipalId
+                      export ARM_CLIENT_SECRET=$servicePrincipalKey
+                      export ARM_TENANT_ID=$tenantId
+                      export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+
                       bash scripts/install-tool.sh terraform 1.7.0
 
                       cd terraform
