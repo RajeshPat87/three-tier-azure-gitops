@@ -150,42 +150,44 @@ stages:
                         -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
                         -backend-config="key=$(TF_STATE_KEY)"
 
-                      # ── Pre-apply cleanup: Key Vault ──────────────────────────
+                      # ── Pre-apply: import orphaned Azure resources into state ──
+                      SUB_ID=$(az account show --query id -o tsv)
+                      RG="rg-threetier-${{ parameters.environment }}"
+                      TF_VARS="-var=environment=${{ parameters.environment }} -var=db_admin_password=${DB_ADMIN_PASSWORD}"
+
+                      # Key Vault — purge if soft-deleted, import if live
                       KV_NAME="kv-threetier-${{ parameters.environment }}"
-                      echo "=== Key Vault cleanup: $KV_NAME ==="
-
-                      # 1. Try purge from list-deleted (API-based discovery)
-                      DELETED_LOCATION=$(az keyvault list-deleted \
-                        --query "[?name=='$KV_NAME'].properties.location" -o tsv 2>/dev/null || true)
-                      if [ -n "$DELETED_LOCATION" ]; then
-                        echo "Soft-deleted vault in $DELETED_LOCATION — purging..."
-                        az keyvault purge --name "$KV_NAME" --location "$DELETED_LOCATION" 2>/dev/null || true
-                      fi
-
-                      # 2. Force-purge in known regions (handles propagation delays)
+                      echo "=== Key Vault: $KV_NAME ==="
                       for LOC in centralus eastus; do
                         az keyvault purge --name "$KV_NAME" --location "$LOC" 2>/dev/null || true
                       done
-
-                      # 3. If vault still exists live, import it into state
-                      VAULT_ID=$(az keyvault show --name "$KV_NAME" --query id -o tsv 2>/dev/null || true)
-                      if [ -n "$VAULT_ID" ]; then
-                        echo "Live vault found — importing into Terraform state..."
-                        terraform import azurerm_key_vault.main "$VAULT_ID" \
-                          -var="environment=${{ parameters.environment }}" \
-                          -var="db_admin_password=${DB_ADMIN_PASSWORD}" 2>/dev/null || true
+                      KV_ID=$(az keyvault show --name "$KV_NAME" --resource-group "$RG" --query id -o tsv 2>/dev/null || true)
+                      if [ -n "$KV_ID" ]; then
+                        echo "Live vault found — importing into state..."
+                        terraform state rm azurerm_key_vault.main 2>/dev/null || true
+                        terraform import $TF_VARS azurerm_key_vault.main "$KV_ID" || true
                       fi
-                      echo "Waiting 30s for Azure propagation..."
-                      sleep 30
 
-                      # ── Pre-apply cleanup: PostgreSQL zone conflict ─────────
-                      # Remove partially-created PG server from state to avoid
-                      # immutable 'zone' attribute errors on re-apply
-                      echo "=== Clearing stale PostgreSQL state ==="
-                      terraform state rm azurerm_postgresql_flexible_server.main 2>/dev/null || true
-                      terraform state rm azurerm_postgresql_flexible_server_database.appdb 2>/dev/null || true
+                      # PostgreSQL Flexible Server — import if exists in Azure
+                      PG_NAME="psql-threetier-${{ parameters.environment }}"
+                      echo "=== PostgreSQL: $PG_NAME ==="
+                      PG_ID=$(az postgres flexible-server show --name "$PG_NAME" --resource-group "$RG" --query id -o tsv 2>/dev/null || true)
+                      if [ -n "$PG_ID" ]; then
+                        echo "Live PG server found — importing into state..."
+                        terraform state rm azurerm_postgresql_flexible_server.main 2>/dev/null || true
+                        terraform import $TF_VARS azurerm_postgresql_flexible_server.main "$PG_ID" || true
 
-                      # ── Re-plan with current state, then apply ──────────────
+                        # Also import the database if it exists
+                        DB_ID="${PG_ID}/databases/threetier"
+                        DB_EXISTS=$(az postgres flexible-server db show --server-name "$PG_NAME" --resource-group "$RG" --database-name threetier --query id -o tsv 2>/dev/null || true)
+                        if [ -n "$DB_EXISTS" ]; then
+                          echo "PG database found — importing..."
+                          terraform state rm azurerm_postgresql_flexible_server_database.appdb 2>/dev/null || true
+                          terraform import $TF_VARS azurerm_postgresql_flexible_server_database.appdb "$DB_ID" || true
+                        fi
+                      fi
+
+                      # ── Fresh plan + apply with reconciled state ────────────
                       echo "=== Running fresh plan + apply ==="
                       terraform plan \
                         -var="environment=${{ parameters.environment }}" \
