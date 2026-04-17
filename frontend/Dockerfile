@@ -19,6 +19,7 @@ RUN chown -R appuser:appgroup /usr/share/nginx/html \
     && touch /var/run/nginx.pid \
     && chown appuser:appgroup /var/run/nginx.pid
 
+USER appuser
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
