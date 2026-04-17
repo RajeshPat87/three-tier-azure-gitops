@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: three-tier-app-dev
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/RajeshPatibandla1987/three-tier-azure-gitops.git
+    targetRevision: main
+    path: k8s/overlays/dev
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: three-tier-app
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

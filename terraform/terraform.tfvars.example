@@ -1,0 +1,6 @@
+location          = "eastus"
+project_name      = "threetier"
+environment       = "dev"
+db_admin_username = "pgadmin"
+aks_node_count    = 2
+aks_vm_size       = "Standard_DS2_v2"

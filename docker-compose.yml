@@ -1,0 +1,96 @@
+services:
+  # ---------- Database (local dev only) ----------
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------- Backend API ----------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: appdb
+      DB_USER: appuser
+      DB_PASSWORD: apppassword
+      DB_SSL: "false"
+      PORT: "3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------- Database Migration (run once) ----------
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["node", "src/migrate.js"]
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: appdb
+      DB_USER: appuser
+      DB_PASSWORD: apppassword
+      DB_SSL: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # ---------- Frontend (Nginx + React) ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

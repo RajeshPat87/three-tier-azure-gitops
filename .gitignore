@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.venv/
+
+# Build artifacts
+frontend/build/
+*.egg-info/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/.terraform.lock.hcl
+
+# Database
+*.db
+
+# Logs
+*.log

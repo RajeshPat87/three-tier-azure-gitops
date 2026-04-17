@@ -1,0 +1,129 @@
+name: CI — Build, Scan & Push
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  # ──────────────────────────────────────────
+  # Build & Scan Backend
+  # ──────────────────────────────────────────
+  build-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: three-tier-backend:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: three-tier-backend:${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: 1
+          severity: HIGH,CRITICAL
+
+      - name: Login to ACR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Push backend to ACR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          docker tag three-tier-backend:${{ env.IMAGE_TAG }} ${{ env.ACR_LOGIN_SERVER }}/three-tier-backend:${{ env.IMAGE_TAG }}
+          docker tag three-tier-backend:${{ env.IMAGE_TAG }} ${{ env.ACR_LOGIN_SERVER }}/three-tier-backend:latest
+          docker push ${{ env.ACR_LOGIN_SERVER }}/three-tier-backend:${{ env.IMAGE_TAG }}
+          docker push ${{ env.ACR_LOGIN_SERVER }}/three-tier-backend:latest
+
+  # ──────────────────────────────────────────
+  # Build & Scan Frontend
+  # ──────────────────────────────────────────
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: false
+          load: true
+          tags: three-tier-frontend:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: three-tier-frontend:${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: 1
+          severity: HIGH,CRITICAL
+
+      - name: Login to ACR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Push frontend to ACR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          docker tag three-tier-frontend:${{ env.IMAGE_TAG }} ${{ env.ACR_LOGIN_SERVER }}/three-tier-frontend:${{ env.IMAGE_TAG }}
+          docker tag three-tier-frontend:${{ env.IMAGE_TAG }} ${{ env.ACR_LOGIN_SERVER }}/three-tier-frontend:latest
+          docker push ${{ env.ACR_LOGIN_SERVER }}/three-tier-frontend:${{ env.IMAGE_TAG }}
+          docker push ${{ env.ACR_LOGIN_SERVER }}/three-tier-frontend:latest
+
+  # ──────────────────────────────────────────
+  # Update K8s Manifests with New Image Tag
+  # ──────────────────────────────────────────
+  update-manifests:
+    needs: [build-backend, build-frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update image tags in K8s manifests
+        run: |
+          sed -i "s|ACRNAME.azurecr.io/three-tier-backend:.*|${{ env.ACR_LOGIN_SERVER }}/three-tier-backend:${{ env.IMAGE_TAG }}|g" k8s/base/backend-deployment.yaml
+          sed -i "s|ACRNAME.azurecr.io/three-tier-frontend:.*|${{ env.ACR_LOGIN_SERVER }}/three-tier-frontend:${{ env.IMAGE_TAG }}|g" k8s/base/frontend-deployment.yaml
+          sed -i "s|ACRNAME.azurecr.io/three-tier-backend:.*|${{ env.ACR_LOGIN_SERVER }}/three-tier-backend:${{ env.IMAGE_TAG }}|g" k8s/base/migration-job.yaml
+
+      - name: Commit and push manifest updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/
+          git diff --staged --quiet || git commit -m "ci: update image tags to ${IMAGE_TAG}"
+          git push

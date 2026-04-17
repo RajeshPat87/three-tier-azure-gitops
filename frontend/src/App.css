@@ -1,0 +1,50 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f0f2f5;
+  color: #333;
+}
+
+.app { max-width: 700px; margin: 0 auto; padding: 2rem 1rem; }
+
+.app-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 2px solid #0078d4;
+}
+
+.app-header h1 { font-size: 1.5rem; color: #0078d4; }
+
+.health-badge {
+  padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.8rem; font-weight: 600;
+}
+.health-badge.healthy { background: #d4edda; color: #155724; }
+.health-badge.unhealthy { background: #f8d7da; color: #721c24; }
+
+.add-form { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+.add-form input {
+  flex: 1; padding: 0.6rem 1rem; border: 1px solid #ddd;
+  border-radius: 6px; font-size: 1rem;
+}
+.add-form button {
+  padding: 0.6rem 1.5rem; background: #0078d4; color: #fff;
+  border: none; border-radius: 6px; cursor: pointer; font-size: 1rem;
+}
+.add-form button:hover { background: #005a9e; }
+
+.item-list { list-style: none; }
+.item-list li {
+  display: flex; align-items: center; gap: 1rem;
+  padding: 0.75rem 1rem; background: #fff; margin-bottom: 0.5rem;
+  border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.item-list li span { flex: 1; font-weight: 500; }
+.item-list li small { color: #888; font-size: 0.8rem; }
+.item-list li.empty { justify-content: center; color: #999; font-style: italic; }
+
+.delete-btn {
+  background: #dc3545; color: #fff; border: none;
+  border-radius: 50%; width: 28px; height: 28px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.delete-btn:hover { background: #c82333; }

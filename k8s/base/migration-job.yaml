@@ -1,0 +1,19 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: three-tier-app
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: ACRNAME.azurecr.io/three-tier-backend:latest
+          command: ["node", "src/migrate.js"]
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: db-secret
+      restartPolicy: OnFailure
