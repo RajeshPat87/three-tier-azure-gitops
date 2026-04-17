@@ -20,6 +20,7 @@ parameters:
     default: ""
 
 variables:
+  - group: three-tier-secrets
   - name: TF_WORKING_DIR
     value: "$(System.DefaultWorkingDirectory)/terraform"
   - name: TF_BACKEND_RESOURCE_GROUP_NAME
