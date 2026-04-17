@@ -1,0 +1,181 @@
+# ---------------------------------------------------------------------------
+# App Deployment Pipeline – build, push to ACR, deploy to AKS
+# ---------------------------------------------------------------------------
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - frontend/**
+      - backend/**
+      - k8s/**
+
+parameters:
+  - name: environment
+    displayName: "Target Environment"
+    type: string
+    default: dev
+    values:
+      - dev
+      - staging
+      - prod
+  - name: imageTag
+    displayName: "Image Tag (leave empty for BuildId)"
+    type: string
+    default: ""
+
+variables:
+  - name: ACR_NAME
+    value: "threetieracr"
+  - name: ACR_LOGIN_SERVER
+    value: "$(ACR_NAME).azurecr.io"
+  - name: AKS_CLUSTER_NAME
+    value: "threetier-dev-aks"
+  - name: RESOURCE_GROUP
+    value: "threetier-dev-rg"
+  - name: IMAGE_TAG
+    ${{ if eq(parameters.imageTag, '') }}:
+      value: "$(Build.BuildId)"
+    ${{ else }}:
+      value: "${{ parameters.imageTag }}"
+  - name: KUSTOMIZE_OVERLAY
+    value: "k8s/overlays/${{ parameters.environment }}"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  # ── Stage 1: Build & Push Images ──────────────────────────────────────
+  - stage: Build
+    displayName: "Build & Push to ACR"
+    jobs:
+      - job: BuildBackend
+        displayName: "Backend image"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Build, scan & push backend"
+            inputs:
+              azureSubscription: "azure-service-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                az acr login --name $(ACR_NAME)
+
+                FULL_TAG="$(ACR_LOGIN_SERVER)/backend:$(IMAGE_TAG)"
+
+                docker build -t "${FULL_TAG}" ./backend
+
+                # Trivy scan – fail on HIGH/CRITICAL
+                curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0
+                trivy image --exit-code 1 --severity HIGH,CRITICAL --no-progress "${FULL_TAG}"
+
+                docker push "${FULL_TAG}"
+
+                # Also tag as latest
+                docker tag "${FULL_TAG}" "$(ACR_LOGIN_SERVER)/backend:latest"
+                docker push "$(ACR_LOGIN_SERVER)/backend:latest"
+
+                echo "##vso[task.setvariable variable=BACKEND_IMAGE;isOutput=true]${FULL_TAG}"
+            name: backendBuild
+
+      - job: BuildFrontend
+        displayName: "Frontend image"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Build, scan & push frontend"
+            inputs:
+              azureSubscription: "azure-service-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                az acr login --name $(ACR_NAME)
+
+                FULL_TAG="$(ACR_LOGIN_SERVER)/frontend:$(IMAGE_TAG)"
+
+                docker build -t "${FULL_TAG}" ./frontend
+
+                curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0
+                trivy image --exit-code 1 --severity HIGH,CRITICAL --no-progress "${FULL_TAG}"
+
+                docker push "${FULL_TAG}"
+
+                docker tag "${FULL_TAG}" "$(ACR_LOGIN_SERVER)/frontend:latest"
+                docker push "$(ACR_LOGIN_SERVER)/frontend:latest"
+
+                echo "##vso[task.setvariable variable=FRONTEND_IMAGE;isOutput=true]${FULL_TAG}"
+            name: frontendBuild
+
+  # ── Stage 2: Deploy to AKS ────────────────────────────────────────────
+  - stage: Deploy
+    displayName: "Deploy to AKS (${{ parameters.environment }})"
+    dependsOn: Build
+    jobs:
+      - deployment: DeployToAKS
+        displayName: "Kustomize → AKS"
+        environment: "${{ parameters.environment }}-app"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "Deploy with Kustomize"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      # Get AKS credentials
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER_NAME) \
+                        --overwrite-existing
+
+                      # Install kustomize
+                      curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+                      sudo mv kustomize /usr/local/bin/
+
+                      # Update image tags in kustomization
+                      cd $(KUSTOMIZE_OVERLAY)
+
+                      kustomize edit set image \
+                        "ACRNAME.azurecr.io/backend=$(ACR_LOGIN_SERVER)/backend:$(IMAGE_TAG)" \
+                        "ACRNAME.azurecr.io/frontend=$(ACR_LOGIN_SERVER)/frontend:$(IMAGE_TAG)"
+
+                      # Apply to cluster
+                      kustomize build . | kubectl apply -f -
+
+                      # Wait for rollout
+                      kubectl rollout status deployment/backend  -n three-tier-app --timeout=300s || true
+                      kubectl rollout status deployment/frontend -n three-tier-app --timeout=300s || true
+
+                - task: AzureCLI@2
+                  displayName: "Verify deployment health"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER_NAME) \
+                        --overwrite-existing
+
+                      echo "=== Pod Status ==="
+                      kubectl get pods -n three-tier-app -o wide
+
+                      echo "=== Services ==="
+                      kubectl get svc -n three-tier-app
+
+                      echo "=== Ingress ==="
+                      kubectl get ingress -n three-tier-app

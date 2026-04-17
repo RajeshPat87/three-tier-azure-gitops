@@ -1,0 +1,144 @@
+# ---------------------------------------------------------------------------
+# Infrastructure Provision Pipeline – Terraform plan & apply
+# Provisions: AKS, ACR, PostgreSQL Flexible Server, VNet, Key Vault
+# ---------------------------------------------------------------------------
+trigger: none   # manual or scheduled only
+
+parameters:
+  - name: environment
+    displayName: "Target Environment"
+    type: string
+    default: dev
+    values:
+      - dev
+      - staging
+      - prod
+  - name: action
+    displayName: "Terraform Action"
+    type: string
+    default: plan
+    values:
+      - plan
+      - apply
+
+variables:
+  - name: TF_WORKING_DIR
+    value: "$(System.DefaultWorkingDirectory)/terraform"
+  - name: TF_BACKEND_RESOURCE_GROUP_NAME
+    value: "rg-terraform-state"
+  - name: TF_BACKEND_STORAGE_ACCOUNT_NAME
+    value: "tfstaterajesh15282"
+  - name: TF_BACKEND_CONTAINER_NAME
+    value: "tfstate"
+  - name: TF_STATE_KEY
+    value: "three-tier-${{ parameters.environment }}.tfstate"
+  - name: ARM_USE_CLI
+    value: "true"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  # ── Stage 1: Terraform Backend Bootstrap ──────────────────────────────
+  - stage: Bootstrap
+    displayName: "Bootstrap TF Backend"
+    jobs:
+      - job: SetupBackend
+        displayName: "Ensure storage exists"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Run setup-tf-backend.sh"
+            inputs:
+              azureSubscription: "azure-service-connection"
+              scriptType: bash
+              scriptPath: "$(System.DefaultWorkingDirectory)/scripts/setup-tf-backend.sh"
+            env:
+              TF_BACKEND_RESOURCE_GROUP_NAME: $(TF_BACKEND_RESOURCE_GROUP_NAME)
+              TF_BACKEND_STORAGE_ACCOUNT_NAME: $(TF_BACKEND_STORAGE_ACCOUNT_NAME)
+              TF_BACKEND_CONTAINER_NAME: $(TF_BACKEND_CONTAINER_NAME)
+
+  # ── Stage 2: Terraform Plan ───────────────────────────────────────────
+  - stage: Plan
+    displayName: "Terraform Plan (${{ parameters.environment }})"
+    dependsOn: Bootstrap
+    jobs:
+      - job: TerraformPlan
+        displayName: "terraform init + plan"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Terraform Init & Plan"
+            inputs:
+              azureSubscription: "azure-service-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                # Install Terraform
+                bash scripts/install-tool.sh terraform 1.7.0
+
+                cd terraform
+
+                terraform init \
+                  -backend-config="resource_group_name=$(TF_BACKEND_RESOURCE_GROUP_NAME)" \
+                  -backend-config="storage_account_name=$(TF_BACKEND_STORAGE_ACCOUNT_NAME)" \
+                  -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
+                  -backend-config="key=$(TF_STATE_KEY)"
+
+                terraform plan \
+                  -var="environment=${{ parameters.environment }}" \
+                  -var="db_admin_password=$(DB_ADMIN_PASSWORD)" \
+                  -out=tfplan \
+                  -input=false
+            env:
+              DB_ADMIN_PASSWORD: $(DB_ADMIN_PASSWORD)
+
+          - publish: "$(TF_WORKING_DIR)/tfplan"
+            artifact: "tfplan-${{ parameters.environment }}"
+            displayName: "Publish plan artifact"
+
+  # ── Stage 3: Terraform Apply (manual approval gate) ───────────────────
+  - stage: Apply
+    displayName: "Terraform Apply (${{ parameters.environment }})"
+    dependsOn: Plan
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - deployment: TerraformApply
+        displayName: "terraform apply"
+        environment: "${{ parameters.environment }}-infra"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - download: current
+                  artifact: "tfplan-${{ parameters.environment }}"
+                  displayName: "Download plan artifact"
+
+                - task: AzureCLI@2
+                  displayName: "Terraform Apply"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      bash scripts/install-tool.sh terraform 1.7.0
+
+                      cd terraform
+
+                      terraform init \
+                        -backend-config="resource_group_name=$(TF_BACKEND_RESOURCE_GROUP_NAME)" \
+                        -backend-config="storage_account_name=$(TF_BACKEND_STORAGE_ACCOUNT_NAME)" \
+                        -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
+                        -backend-config="key=$(TF_STATE_KEY)"
+
+                      terraform apply -auto-approve -input=false \
+                        "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/tfplan"
+
+                      # Export outputs for downstream pipelines
+                      echo "##vso[task.setvariable variable=ACR_LOGIN_SERVER;isOutput=true]$(terraform output -raw acr_login_server)"
+                      echo "##vso[task.setvariable variable=AKS_CLUSTER_NAME;isOutput=true]$(terraform output -raw aks_cluster_name)"
+                      echo "##vso[task.setvariable variable=RESOURCE_GROUP;isOutput=true]$(terraform output -raw resource_group_name)"
+                  name: tfOutputs

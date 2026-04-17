@@ -1,0 +1,160 @@
+# ---------------------------------------------------------------------------
+# Infrastructure Destroy Pipeline – Terraform destroy
+# Tears down ALL Azure resources for a given environment
+# ⚠️  DESTRUCTIVE – requires manual approval via environment gate
+# ---------------------------------------------------------------------------
+trigger: none   # manual only – never auto-trigger
+
+parameters:
+  - name: environment
+    displayName: "Environment to DESTROY"
+    type: string
+    default: dev
+    values:
+      - dev
+      - staging
+      - prod
+  - name: confirmDestroy
+    displayName: "Type 'DESTROY' to confirm"
+    type: string
+    default: ""
+
+variables:
+  - name: TF_WORKING_DIR
+    value: "$(System.DefaultWorkingDirectory)/terraform"
+  - name: TF_BACKEND_RESOURCE_GROUP_NAME
+    value: "rg-terraform-state"
+  - name: TF_BACKEND_STORAGE_ACCOUNT_NAME
+    value: "tfstaterajesh15282"
+  - name: TF_BACKEND_CONTAINER_NAME
+    value: "tfstate"
+  - name: TF_STATE_KEY
+    value: "three-tier-${{ parameters.environment }}.tfstate"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  # ── Stage 1: Safety Gate ──────────────────────────────────────────────
+  - stage: SafetyCheck
+    displayName: "Safety Confirmation"
+    jobs:
+      - job: ConfirmDestroy
+        displayName: "Validate confirmation keyword"
+        steps:
+          - script: |
+              if [ "${{ parameters.confirmDestroy }}" != "DESTROY" ]; then
+                echo "##vso[task.logissue type=error]You must type 'DESTROY' in the confirmDestroy parameter to proceed."
+                echo "##vso[task.complete result=Failed;]Safety check failed."
+                exit 1
+              fi
+              echo "Destruction confirmed for environment: ${{ parameters.environment }}"
+            displayName: "Check DESTROY keyword"
+
+  # ── Stage 2: Terraform Plan -destroy ──────────────────────────────────
+  - stage: PlanDestroy
+    displayName: "Terraform Plan Destroy (${{ parameters.environment }})"
+    dependsOn: SafetyCheck
+    jobs:
+      - job: TerraformPlanDestroy
+        displayName: "terraform plan -destroy"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Plan destruction"
+            inputs:
+              azureSubscription: "azure-service-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                bash scripts/install-tool.sh terraform 1.7.0
+
+                cd terraform
+
+                terraform init \
+                  -backend-config="resource_group_name=$(TF_BACKEND_RESOURCE_GROUP_NAME)" \
+                  -backend-config="storage_account_name=$(TF_BACKEND_STORAGE_ACCOUNT_NAME)" \
+                  -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
+                  -backend-config="key=$(TF_STATE_KEY)"
+
+                terraform plan -destroy \
+                  -var="environment=${{ parameters.environment }}" \
+                  -var="db_admin_password=$(DB_ADMIN_PASSWORD)" \
+                  -out=tfplan-destroy \
+                  -input=false
+
+                echo ""
+                echo "========================================="
+                echo "  RESOURCES MARKED FOR DESTRUCTION"
+                echo "  Environment: ${{ parameters.environment }}"
+                echo "========================================="
+                terraform show tfplan-destroy | grep "will be destroyed" || echo "(plan output above)"
+            env:
+              DB_ADMIN_PASSWORD: $(DB_ADMIN_PASSWORD)
+
+          - publish: "$(TF_WORKING_DIR)/tfplan-destroy"
+            artifact: "tfplan-destroy-${{ parameters.environment }}"
+            displayName: "Publish destroy plan"
+
+  # ── Stage 3: Terraform Destroy (with environment approval gate) ───────
+  - stage: Destroy
+    displayName: "⚠️ DESTROY (${{ parameters.environment }})"
+    dependsOn: PlanDestroy
+    jobs:
+      - deployment: TerraformDestroy
+        displayName: "terraform destroy"
+        environment: "${{ parameters.environment }}-destroy"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - download: current
+                  artifact: "tfplan-destroy-${{ parameters.environment }}"
+                  displayName: "Download destroy plan"
+
+                - task: AzureCLI@2
+                  displayName: "Terraform Destroy"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      bash scripts/install-tool.sh terraform 1.7.0
+
+                      cd terraform
+
+                      terraform init \
+                        -backend-config="resource_group_name=$(TF_BACKEND_RESOURCE_GROUP_NAME)" \
+                        -backend-config="storage_account_name=$(TF_BACKEND_STORAGE_ACCOUNT_NAME)" \
+                        -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
+                        -backend-config="key=$(TF_STATE_KEY)"
+
+                      terraform apply -auto-approve -input=false \
+                        "$(Pipeline.Workspace)/tfplan-destroy-${{ parameters.environment }}/tfplan-destroy"
+
+                      echo ""
+                      echo "========================================="
+                      echo "  DESTRUCTION COMPLETE"
+                      echo "  Environment: ${{ parameters.environment }}"
+                      echo "========================================="
+
+  # ── Stage 4: Cleanup K8s Context ──────────────────────────────────────
+  - stage: Cleanup
+    displayName: "Post-Destroy Cleanup"
+    dependsOn: Destroy
+    condition: succeeded()
+    jobs:
+      - job: CleanupJob
+        displayName: "Remove local kube context"
+        steps:
+          - script: |
+              echo "Infrastructure for '${{ parameters.environment }}' has been destroyed."
+              echo "Remember to:"
+              echo "  1. Remove any DNS records pointing to the old cluster"
+              echo "  2. Revoke any service principals specific to this environment"
+              echo "  3. Update ArgoCD if it was tracking this environment"
+            displayName: "Post-destroy reminders"

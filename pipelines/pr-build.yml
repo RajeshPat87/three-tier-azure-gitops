@@ -1,0 +1,121 @@
+# ---------------------------------------------------------------------------
+# PR Build Pipeline – validates pull requests before merge
+# Runs: lint Dockerfiles, unit tests, Docker build, Trivy scan
+# ---------------------------------------------------------------------------
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  - name: DOCKER_BUILDKIT
+    value: "1"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  # ── Stage 1: Lint & Test ──────────────────────────────────────────────
+  - stage: Validate
+    displayName: "Lint & Unit Tests"
+    jobs:
+      - job: LintDockerfiles
+        displayName: "Hadolint – Dockerfile Lint"
+        steps:
+          - script: |
+              curl -fsSL -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+              chmod +x hadolint
+            displayName: "Install hadolint"
+
+          - script: |
+              ./hadolint frontend/Dockerfile --failure-threshold warning
+              ./hadolint backend/Dockerfile  --failure-threshold warning
+            displayName: "Lint Dockerfiles"
+
+      - job: BackendTests
+        displayName: "Backend – npm test"
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: "20.x"
+            displayName: "Use Node 20"
+
+          - script: |
+              cd backend
+              npm ci --ignore-scripts
+              npm test --if-present
+            displayName: "Install & test backend"
+
+      - job: FrontendTests
+        displayName: "Frontend – npm test"
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: "20.x"
+            displayName: "Use Node 20"
+
+          - script: |
+              cd frontend
+              npm ci --ignore-scripts
+              CI=true npm test --if-present
+            displayName: "Install & test frontend"
+
+  # ── Stage 2: Docker Build & Scan ──────────────────────────────────────
+  - stage: Build
+    displayName: "Docker Build & Trivy Scan"
+    dependsOn: Validate
+    jobs:
+      - job: BuildBackend
+        displayName: "Build & scan backend image"
+        steps:
+          - script: |
+              docker build -t three-tier-backend:pr-$(Build.BuildId) ./backend
+            displayName: "Docker build backend"
+
+          - script: |
+              curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0
+            displayName: "Install Trivy"
+
+          - script: |
+              trivy image --exit-code 1 --severity HIGH,CRITICAL \
+                --no-progress three-tier-backend:pr-$(Build.BuildId)
+            displayName: "Trivy scan backend"
+
+      - job: BuildFrontend
+        displayName: "Build & scan frontend image"
+        steps:
+          - script: |
+              docker build -t three-tier-frontend:pr-$(Build.BuildId) ./frontend
+            displayName: "Docker build frontend"
+
+          - script: |
+              curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0
+            displayName: "Install Trivy"
+
+          - script: |
+              trivy image --exit-code 1 --severity HIGH,CRITICAL \
+                --no-progress three-tier-frontend:pr-$(Build.BuildId)
+            displayName: "Trivy scan frontend"
+
+  # ── Stage 3: Terraform Validate ───────────────────────────────────────
+  - stage: TerraformValidate
+    displayName: "Terraform Validate"
+    dependsOn: Validate
+    jobs:
+      - job: TfValidate
+        displayName: "terraform fmt & validate"
+        steps:
+          - script: |
+              curl -fsSL -o tf.zip https://releases.hashicorp.com/terraform/1.7.0/terraform_1.7.0_linux_amd64.zip
+              unzip -q tf.zip && sudo mv terraform /usr/local/bin/
+            displayName: "Install Terraform"
+
+          - script: |
+              cd terraform
+              terraform fmt -check -recursive
+              terraform init -backend=false
+              terraform validate
+            displayName: "fmt + validate"
