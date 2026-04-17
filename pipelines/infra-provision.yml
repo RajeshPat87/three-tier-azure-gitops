@@ -150,24 +150,55 @@ stages:
                         -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
                         -backend-config="key=$(TF_STATE_KEY)"
 
-                      # Purge any soft-deleted Key Vault from ALL possible locations
+                      # ── Pre-apply cleanup: Key Vault ──────────────────────────
                       KV_NAME="kv-threetier-${{ parameters.environment }}"
-                      echo "Checking for soft-deleted vault: $KV_NAME"
-                      DELETED_LOCATION=$(az keyvault list-deleted --query "[?name=='$KV_NAME'].properties.location" -o tsv 2>/dev/null || true)
+                      echo "=== Key Vault cleanup: $KV_NAME ==="
+
+                      # 1. Try purge from list-deleted (API-based discovery)
+                      DELETED_LOCATION=$(az keyvault list-deleted \
+                        --query "[?name=='$KV_NAME'].properties.location" -o tsv 2>/dev/null || true)
                       if [ -n "$DELETED_LOCATION" ]; then
-                        echo "Found soft-deleted vault in: $DELETED_LOCATION — purging..."
-                        az keyvault purge --name "$KV_NAME" --location "$DELETED_LOCATION" || true
-                        echo "Waiting 30s for purge to propagate..."
-                        sleep 30
-                      else
-                        echo "No soft-deleted vault found — proceeding."
+                        echo "Soft-deleted vault in $DELETED_LOCATION — purging..."
+                        az keyvault purge --name "$KV_NAME" --location "$DELETED_LOCATION" 2>/dev/null || true
                       fi
 
-                      terraform apply -auto-approve -input=false \
-                        "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/tfplan"
+                      # 2. Force-purge in known regions (handles propagation delays)
+                      for LOC in centralus eastus; do
+                        az keyvault purge --name "$KV_NAME" --location "$LOC" 2>/dev/null || true
+                      done
+
+                      # 3. If vault still exists live, import it into state
+                      VAULT_ID=$(az keyvault show --name "$KV_NAME" --query id -o tsv 2>/dev/null || true)
+                      if [ -n "$VAULT_ID" ]; then
+                        echo "Live vault found — importing into Terraform state..."
+                        terraform import azurerm_key_vault.main "$VAULT_ID" \
+                          -var="environment=${{ parameters.environment }}" \
+                          -var="db_admin_password=${DB_ADMIN_PASSWORD}" 2>/dev/null || true
+                      fi
+                      echo "Waiting 30s for Azure propagation..."
+                      sleep 30
+
+                      # ── Pre-apply cleanup: PostgreSQL zone conflict ─────────
+                      # Remove partially-created PG server from state to avoid
+                      # immutable 'zone' attribute errors on re-apply
+                      echo "=== Clearing stale PostgreSQL state ==="
+                      terraform state rm azurerm_postgresql_flexible_server.main 2>/dev/null || true
+                      terraform state rm azurerm_postgresql_flexible_server_database.appdb 2>/dev/null || true
+
+                      # ── Re-plan with current state, then apply ──────────────
+                      echo "=== Running fresh plan + apply ==="
+                      terraform plan \
+                        -var="environment=${{ parameters.environment }}" \
+                        -var="db_admin_password=${DB_ADMIN_PASSWORD}" \
+                        -out=tfplan-fresh \
+                        -input=false
+
+                      terraform apply -auto-approve -input=false tfplan-fresh
 
                       # Export outputs for downstream pipelines
                       echo "##vso[task.setvariable variable=ACR_LOGIN_SERVER;isOutput=true]$(terraform output -raw acr_login_server)"
                       echo "##vso[task.setvariable variable=AKS_CLUSTER_NAME;isOutput=true]$(terraform output -raw aks_cluster_name)"
                       echo "##vso[task.setvariable variable=RESOURCE_GROUP;isOutput=true]$(terraform output -raw resource_group_name)"
                   name: tfOutputs
+                  env:
+                    DB_ADMIN_PASSWORD: $(DB_ADMIN_PASSWORD)
