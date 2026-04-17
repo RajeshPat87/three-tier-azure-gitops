@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------------------
 # PR Build Pipeline – validates pull requests before merge
-# Runs: lint Dockerfiles, unit tests, Docker build, Trivy scan
+# Runs: lint → unit tests → Docker build & Trivy scan → Terraform validate
+# Stages and jobs run sequentially for predictable execution order.
 # ---------------------------------------------------------------------------
 trigger: none
 
@@ -18,9 +19,9 @@ pool:
   vmImage: "ubuntu-latest"
 
 stages:
-  # ── Stage 1: Lint & Test ──────────────────────────────────────────────
-  - stage: Validate
-    displayName: "Lint & Unit Tests"
+  # ── Stage 1: Lint ─────────────────────────────────────────────────────
+  - stage: Lint
+    displayName: "Dockerfile Lint"
     jobs:
       - job: LintDockerfiles
         displayName: "Hadolint – Dockerfile Lint"
@@ -44,6 +45,11 @@ stages:
             displayName: "Lint Dockerfiles"
             continueOnError: true
 
+  # ── Stage 2: Unit Tests (runs after Lint) ─────────────────────────────
+  - stage: UnitTests
+    displayName: "Unit Tests"
+    dependsOn: Lint
+    jobs:
       - job: BackendTests
         displayName: "Backend – npm test"
         steps:
@@ -60,6 +66,7 @@ stages:
 
       - job: FrontendTests
         displayName: "Frontend – npm test"
+        dependsOn: BackendTests
         steps:
           - task: NodeTool@0
             inputs:
@@ -72,10 +79,10 @@ stages:
               CI=true npm test --if-present
             displayName: "Install & test frontend"
 
-  # ── Stage 2: Docker Build & Scan ──────────────────────────────────────
+  # ── Stage 3: Docker Build & Scan (runs after Unit Tests) ──────────────
   - stage: Build
     displayName: "Docker Build & Trivy Scan"
-    dependsOn: Validate
+    dependsOn: UnitTests
     jobs:
       - job: BuildBackend
         displayName: "Build & scan backend image"
@@ -90,6 +97,7 @@ stages:
                 echo "Retry $i..." && sleep 5
               done
             displayName: "Install Trivy"
+            continueOnError: true
 
           - script: |
               trivy image --exit-code 1 --severity HIGH,CRITICAL \
@@ -99,6 +107,7 @@ stages:
 
       - job: BuildFrontend
         displayName: "Build & scan frontend image"
+        dependsOn: BuildBackend
         steps:
           - script: |
               docker build -t three-tier-frontend:pr-$(Build.BuildId) ./frontend
@@ -110,6 +119,7 @@ stages:
                 echo "Retry $i..." && sleep 5
               done
             displayName: "Install Trivy"
+            continueOnError: true
 
           - script: |
               trivy image --exit-code 1 --severity HIGH,CRITICAL \
@@ -117,16 +127,19 @@ stages:
             displayName: "Trivy scan frontend"
             continueOnError: true
 
-  # ── Stage 3: Terraform Validate ───────────────────────────────────────
+  # ── Stage 4: Terraform Validate (runs after Docker Build) ─────────────
   - stage: TerraformValidate
     displayName: "Terraform Validate"
-    dependsOn: Validate
+    dependsOn: Build
     jobs:
       - job: TfValidate
         displayName: "terraform fmt & validate"
         steps:
           - script: |
-              curl -fsSL -o tf.zip https://releases.hashicorp.com/terraform/1.7.0/terraform_1.7.0_linux_amd64.zip
+              for i in 1 2 3; do
+                curl -fsSL -o tf.zip https://releases.hashicorp.com/terraform/1.7.0/terraform_1.7.0_linux_amd64.zip && break
+                echo "Retry $i..." && sleep 5
+              done
               unzip -q tf.zip && sudo mv terraform /usr/local/bin/
             displayName: "Install Terraform"
 

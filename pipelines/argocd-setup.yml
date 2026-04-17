@@ -176,12 +176,10 @@ stages:
 
                       echo "ADO repo credentials configured in ArgoCD."
 
-  # ── Stage 3: Register ArgoCD Applications ────────────────────────────
+  # ── Stage 3: Register ArgoCD Applications (after repo config) ────────
   - stage: RegisterApps
     displayName: "Register ArgoCD Applications"
-    dependsOn:
-      - InstallArgoCD
-      - ConfigureRepo
+    dependsOn: ConfigureRepo
     condition: |
       and(
         not(failed()),
@@ -286,7 +284,12 @@ stages:
   # ── Stage 4: Uninstall ArgoCD (if requested) ──────────────────────────
   - stage: UninstallArgoCD
     displayName: "Uninstall ArgoCD"
-    condition: and(succeeded(), eq('${{ parameters.action }}', 'uninstall'))
+    dependsOn: RegisterApps
+    condition: |
+      and(
+        not(failed()),
+        eq('${{ parameters.action }}', 'uninstall')
+      )
     jobs:
       - deployment: UninstallArgoCDJob
         displayName: "Helm uninstall ArgoCD"

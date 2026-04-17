@@ -46,12 +46,12 @@ pool:
   vmImage: "ubuntu-latest"
 
 stages:
-  # ── Stage 1: Build & Push Images to ACR ────────────────────────────────
-  - stage: Build
-    displayName: "Build & Push to ACR"
+  # ── Stage 1: Build & Push Backend to ACR ────────────────────────────────
+  - stage: BuildBackend
+    displayName: "Build & Push Backend to ACR"
     jobs:
-      - job: BuildBackend
-        displayName: "Backend image"
+      - job: BuildBackendJob
+        displayName: "Backend: build → scan → push"
         steps:
           - task: AzureCLI@2
             displayName: "Build, scan & push backend"
@@ -69,7 +69,10 @@ stages:
                 docker build -t "${FULL_TAG}" ./backend
 
                 # Trivy scan – fail on HIGH/CRITICAL
-                curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0
+                for i in 1 2 3; do
+                  curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0 && break
+                  echo "Retry $i..." && sleep 5
+                done
                 trivy image --exit-code 1 --severity HIGH,CRITICAL --no-progress "${FULL_TAG}"
 
                 docker push "${FULL_TAG}"
@@ -80,8 +83,13 @@ stages:
                 echo "##vso[task.setvariable variable=BACKEND_IMAGE;isOutput=true]${FULL_TAG}"
             name: backendBuild
 
-      - job: BuildFrontend
-        displayName: "Frontend image"
+  # ── Stage 2: Build & Push Frontend to ACR (after backend) ──────────────
+  - stage: BuildFrontend
+    displayName: "Build & Push Frontend to ACR"
+    dependsOn: BuildBackend
+    jobs:
+      - job: BuildFrontendJob
+        displayName: "Frontend: build → scan → push"
         steps:
           - task: AzureCLI@2
             displayName: "Build, scan & push frontend"
@@ -98,7 +106,10 @@ stages:
 
                 docker build -t "${FULL_TAG}" ./frontend
 
-                curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0
+                for i in 1 2 3; do
+                  curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0 && break
+                  echo "Retry $i..." && sleep 5
+                done
                 trivy image --exit-code 1 --severity HIGH,CRITICAL --no-progress "${FULL_TAG}"
 
                 docker push "${FULL_TAG}"
@@ -109,11 +120,11 @@ stages:
                 echo "##vso[task.setvariable variable=FRONTEND_IMAGE;isOutput=true]${FULL_TAG}"
             name: frontendBuild
 
-  # ── Stage 2: Update K8s Manifests (GitOps – commit image tags) ────────
+  # ── Stage 3: Update K8s Manifests (GitOps – commit image tags) ────────
   # ArgoCD watches the repo; when it sees updated image tags, it syncs.
   - stage: UpdateManifests
     displayName: "Update Manifests (GitOps)"
-    dependsOn: Build
+    dependsOn: BuildFrontend
     jobs:
       - deployment: CommitImageTags
         displayName: "Commit image tags → ArgoCD syncs"
@@ -172,7 +183,7 @@ stages:
                         echo "Manifests committed. ArgoCD will auto-sync shortly."
                       fi
 
-  # ── Stage 3: Verify ArgoCD Sync ──────────────────────────────────────
+  # ── Stage 4: Verify ArgoCD Sync ──────────────────────────────────────
   - stage: VerifySync
     displayName: "Verify ArgoCD Sync (${{ parameters.environment }})"
     dependsOn: UpdateManifests
