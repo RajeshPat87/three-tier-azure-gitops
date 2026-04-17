@@ -27,13 +27,13 @@ parameters:
 
 variables:
   - name: ACR_NAME
-    value: "threetieracr"
+    value: "acrthreetier${{ parameters.environment }}"
   - name: ACR_LOGIN_SERVER
     value: "$(ACR_NAME).azurecr.io"
   - name: AKS_CLUSTER_NAME
-    value: "threetier-${{ parameters.environment }}-aks"
+    value: "aks-threetier-${{ parameters.environment }}"
   - name: RESOURCE_GROUP
-    value: "threetier-${{ parameters.environment }}-rg"
+    value: "rg-threetier-${{ parameters.environment }}"
   - name: IMAGE_TAG
     ${{ if eq(parameters.imageTag, '') }}:
       value: "$(Build.BuildId)"

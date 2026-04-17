@@ -31,9 +31,9 @@ parameters:
 variables:
   - group: three-tier-secrets
   - name: AKS_CLUSTER_NAME
-    value: "threetier-${{ parameters.environment }}-aks"
+    value: "aks-threetier-${{ parameters.environment }}"
   - name: RESOURCE_GROUP
-    value: "threetier-${{ parameters.environment }}-rg"
+    value: "rg-threetier-${{ parameters.environment }}"
   - name: ARGOCD_NAMESPACE
     value: "argocd"
   - name: ARGOCD_VERSION
