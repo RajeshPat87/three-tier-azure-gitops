@@ -26,6 +26,7 @@ parameters:
     default: ""
 
 variables:
+  - group: three-tier-secrets
   - name: ACR_NAME
     value: "acrthreetier${{ parameters.environment }}"
   - name: ACR_LOGIN_SERVER
@@ -164,40 +165,57 @@ stages:
                   displayName: "Commit & push updated manifests to GitHub"
                   env:
                     GITHUB_PAT: $(GITHUB_PAT)
+                    ENV_NAME: ${{ parameters.environment }}
+                    TAG: $(IMAGE_TAG)
+                    OVERLAY_DIR: $(KUSTOMIZE_OVERLAY)
                   inputs:
                     targetType: inline
                     script: |
                       set -euo pipefail
 
-                      GITHUB_REPO="https://x-access-token:${GITHUB_PAT}@github.com/RajeshPat87/three-tier-azure-gitops.git"
+                      OWNER="RajeshPat87"
+                      REPO="three-tier-azure-gitops"
+                      FILE_PATH="k8s/overlays/${ENV_NAME}/kustomization.yaml"
+                      BRANCH="main"
+                      API="https://api.github.com/repos/${OWNER}/${REPO}"
 
-                      # Clone fresh from GitHub (source of truth)
-                      WORK_DIR=$(mktemp -d)
-                      git clone --depth 1 "$GITHUB_REPO" "$WORK_DIR"
+                      echo "Reading updated kustomization from workspace..."
+                      ENCODED=$(base64 -w 0 < "${OVERLAY_DIR}/kustomization.yaml")
 
-                      # Copy updated kustomization overlay into the clone
-                      cp -r $(KUSTOMIZE_OVERLAY)/* "$WORK_DIR/k8s/overlays/${{ parameters.environment }}/"
+                      echo "Fetching current file SHA from GitHub..."
+                      CURRENT_SHA=$(curl -sf \
+                        -H "Authorization: token ${GITHUB_PAT}" \
+                        -H "Accept: application/vnd.github.v3+json" \
+                        "${API}/contents/${FILE_PATH}?ref=${BRANCH}" \
+                        | jq -r '.sha')
+                      echo "Current SHA: ${CURRENT_SHA}"
 
-                      cd "$WORK_DIR"
-                      git config user.email "ado-pipeline@dev.azure.com"
-                      git config user.name "Azure DevOps Pipeline"
+                      COMMIT_MSG="chore(gitops): update ${ENV_NAME} images to tag ${TAG} [skip ci]"
 
-                      git add k8s/
+                      PAYLOAD=$(jq -n \
+                        --arg msg  "${COMMIT_MSG}" \
+                        --arg cnt  "${ENCODED}" \
+                        --arg sha  "${CURRENT_SHA}" \
+                        --arg br   "${BRANCH}" \
+                        '{message: $msg, content: $cnt, sha: $sha, branch: $br,
+                          committer: {name: "Azure DevOps Pipeline", email: "ado-pipeline@dev.azure.com"}}')
 
-                      if git diff --cached --quiet; then
-                        echo "No manifest changes to commit."
+                      echo "Pushing updated manifest via GitHub API..."
+                      HTTP_CODE=$(curl -s -o /tmp/gh_response.json -w "%{http_code}" \
+                        -X PUT \
+                        -H "Authorization: token ${GITHUB_PAT}" \
+                        -H "Accept: application/vnd.github.v3+json" \
+                        "${API}/contents/${FILE_PATH}" \
+                        -d "${PAYLOAD}")
+
+                      if [ "$HTTP_CODE" = "200" ]; then
+                        echo "Manifests pushed to GitHub successfully."
+                        jq -r '.commit.sha[:8]' /tmp/gh_response.json
                       else
-                        git commit -m "chore(gitops): update ${{ parameters.environment }} images to tag $(IMAGE_TAG) [skip ci]
-
-                      Pipeline: $(Build.DefinitionName)
-                      Build: $(Build.BuildNumber)
-                      Environment: ${{ parameters.environment }}"
-
-                        git push origin main
-                        echo "Manifests pushed to GitHub. ArgoCD will auto-sync shortly."
+                        echo "GitHub API returned HTTP ${HTTP_CODE}"
+                        cat /tmp/gh_response.json
+                        exit 1
                       fi
-
-                      rm -rf "$WORK_DIR"
 
   # ── Stage 4: Verify ArgoCD Sync ──────────────────────────────────────
   - stage: VerifySync
