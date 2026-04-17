@@ -172,16 +172,22 @@ stages:
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
-                KV_NAME="kv-threetier-${{ parameters.environment }}"
-                echo "Checking for soft-deleted vault: $KV_NAME"
-                DELETED_LOCATION=$(az keyvault list-deleted --query "[?name=='$KV_NAME'].properties.location" -o tsv 2>/dev/null || true)
-                if [ -n "$DELETED_LOCATION" ]; then
-                  echo "Found soft-deleted vault in: $DELETED_LOCATION — purging..."
-                  az keyvault purge --name "$KV_NAME" --location "$DELETED_LOCATION" || true
-                  echo "Vault purged."
-                else
-                  echo "No soft-deleted vault found."
-                fi
+                # Find any KV in the resource group (name is now randomised)
+                RG="rg-threetier-${{ parameters.environment }}"
+                echo "Checking for soft-deleted vaults in RG $RG..."
+                # Purge old fixed-name vault if soft-deleted
+                for OLD_KV in kv-threetier-${{ parameters.environment }}; do
+                  for LOC in centralus eastus; do
+                    az keyvault purge --name "$OLD_KV" --location "$LOC" 2>/dev/null || true
+                  done
+                done
+                # Purge any soft-deleted vaults matching our pattern
+                az keyvault list-deleted --query "[?starts_with(name,'kv')].{name:name,location:properties.location}" -o tsv 2>/dev/null | \
+                  while IFS=$'\t' read -r KV_NAME KV_LOC; do
+                    echo "Purging soft-deleted vault: $KV_NAME in $KV_LOC"
+                    az keyvault purge --name "$KV_NAME" --location "$KV_LOC" 2>/dev/null || true
+                  done
+                echo "Vault cleanup done."
           - script: |
               echo "Infrastructure for '${{ parameters.environment }}' has been destroyed."
               echo "Remember to:"

@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/azuread"
       version = "~> 2.47"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 
   # Backend values are injected via -backend-config in the pipeline.
@@ -35,3 +39,12 @@ provider "azurerm" {
 }
 
 provider "azuread" {}
+
+# Stable random suffix for globally-unique resource names (Key Vault, etc.)
+resource "random_string" "suffix" {
+  length  = 6
+  lower   = true
+  upper   = false
+  numeric = true
+  special = false
+}

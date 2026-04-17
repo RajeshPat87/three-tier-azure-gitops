@@ -155,18 +155,13 @@ stages:
                       RG="rg-threetier-${{ parameters.environment }}"
                       TF_VARS="-var=environment=${{ parameters.environment }} -var=db_admin_password=${DB_ADMIN_PASSWORD}"
 
-                      # Key Vault — purge if soft-deleted, import if live
-                      KV_NAME="kv-threetier-${{ parameters.environment }}"
-                      echo "=== Key Vault: $KV_NAME ==="
-                      for LOC in centralus eastus; do
-                        az keyvault purge --name "$KV_NAME" --location "$LOC" 2>/dev/null || true
+                      # Key Vault — purge old soft-deleted vaults (name is now randomised so no conflict)
+                      echo "=== Key Vault: purging any old soft-deleted vaults ==="
+                      for OLD_KV in kv-threetier-${{ parameters.environment }}; do
+                        for LOC in centralus eastus; do
+                          az keyvault purge --name "$OLD_KV" --location "$LOC" 2>/dev/null || true
+                        done
                       done
-                      KV_ID=$(az keyvault show --name "$KV_NAME" --resource-group "$RG" --query id -o tsv 2>/dev/null || true)
-                      if [ -n "$KV_ID" ]; then
-                        echo "Live vault found — importing into state..."
-                        terraform state rm azurerm_key_vault.main 2>/dev/null || true
-                        terraform import $TF_VARS azurerm_key_vault.main "$KV_ID" || true
-                      fi
 
                       # PostgreSQL Flexible Server — import if exists in Azure
                       PG_NAME="psql-threetier-${{ parameters.environment }}"
