@@ -1,0 +1,328 @@
+# ---------------------------------------------------------------------------
+# ArgoCD Setup Pipeline – Install, configure, and bootstrap ArgoCD on AKS
+# ---------------------------------------------------------------------------
+# This pipeline:
+#   1. Installs ArgoCD on AKS via Helm
+#   2. Configures ADO repo credentials so ArgoCD can pull manifests
+#   3. Creates the ArgoCD Project and Application resources (dev/staging/prod)
+#   4. Exposes ArgoCD server via LoadBalancer for initial access
+# ---------------------------------------------------------------------------
+trigger: none   # Manual trigger only
+
+parameters:
+  - name: environment
+    displayName: "Target AKS Environment"
+    type: string
+    default: dev
+    values:
+      - dev
+      - staging
+      - prod
+  - name: action
+    displayName: "Action"
+    type: string
+    default: install
+    values:
+      - install        # Fresh install of ArgoCD + register apps
+      - upgrade        # Upgrade ArgoCD Helm chart
+      - register-apps  # Only register/update ArgoCD Application CRDs
+      - uninstall      # Remove ArgoCD from cluster
+
+variables:
+  - group: three-tier-secrets
+  - name: AKS_CLUSTER_NAME
+    value: "threetier-${{ parameters.environment }}-aks"
+  - name: RESOURCE_GROUP
+    value: "threetier-${{ parameters.environment }}-rg"
+  - name: ARGOCD_NAMESPACE
+    value: "argocd"
+  - name: ARGOCD_VERSION
+    value: "7.7.10"
+  - name: ADO_REPO_URL
+    value: "https://dev.azure.com/RajeshPatibandla1987/three-tier-azure-gitops/_git/three-tier-gitops-app"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  # ── Stage 1: Install / Upgrade ArgoCD ────────────────────────────────
+  - stage: InstallArgoCD
+    displayName: "Install ArgoCD on AKS"
+    condition: and(succeeded(), in('${{ parameters.action }}', 'install', 'upgrade'))
+    jobs:
+      - deployment: InstallArgoCDJob
+        displayName: "Helm install ArgoCD"
+        environment: "${{ parameters.environment }}-infra"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "Install ArgoCD via Helm"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      # Get AKS credentials
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER_NAME) \
+                        --overwrite-existing
+
+                      # Install Helm if not present
+                      if ! command -v helm &>/dev/null; then
+                        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                      fi
+
+                      # Add ArgoCD Helm repo
+                      helm repo add argo https://argoproj.github.io/argo-helm
+                      helm repo update
+
+                      # Create namespace
+                      kubectl apply -f argocd/base/namespace.yaml
+
+                      # Install or upgrade ArgoCD
+                      helm upgrade --install argocd argo/argo-cd \
+                        --namespace $(ARGOCD_NAMESPACE) \
+                        --version $(ARGOCD_VERSION) \
+                        --set server.service.type=LoadBalancer \
+                        --set server.extraArgs="{--insecure}" \
+                        --set configs.params."server\.insecure"=true \
+                        --set controller.metrics.enabled=true \
+                        --set server.metrics.enabled=true \
+                        --set repoServer.metrics.enabled=true \
+                        --set applicationSet.metrics.enabled=true \
+                        --set dex.enabled=false \
+                        --set notifications.enabled=true \
+                        --wait --timeout 10m
+
+                      echo "ArgoCD installed successfully."
+
+                      # Wait for ArgoCD server pod to be ready
+                      kubectl rollout status deployment/argocd-server \
+                        -n $(ARGOCD_NAMESPACE) --timeout=300s
+
+                      # Print the initial admin password
+                      echo "##[section]ArgoCD Initial Admin Password:"
+                      echo "  Run: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
+
+                      # Print the ArgoCD server external IP
+                      echo "##[section]ArgoCD Server URL:"
+                      echo "  Waiting for external IP..."
+                      for i in $(seq 1 30); do
+                        ARGOCD_IP=$(kubectl get svc argocd-server -n $(ARGOCD_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                        if [[ -n "${ARGOCD_IP}" ]]; then
+                          echo "  ArgoCD URL: https://${ARGOCD_IP}"
+                          echo "##vso[task.setvariable variable=ARGOCD_SERVER_IP;isOutput=true]${ARGOCD_IP}"
+                          break
+                        fi
+                        sleep 10
+                      done
+
+  # ── Stage 2: Configure ArgoCD Repo Credentials ────────────────────────
+  - stage: ConfigureRepo
+    displayName: "Configure ADO Repo in ArgoCD"
+    dependsOn: InstallArgoCD
+    condition: and(succeeded(), in('${{ parameters.action }}', 'install'))
+    jobs:
+      - deployment: ConfigureRepoJob
+        displayName: "Register ADO repo credentials"
+        environment: "${{ parameters.environment }}-infra"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "Create repo credentials secret"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER_NAME) \
+                        --overwrite-existing
+
+                      # Use System.AccessToken (ADO build service token) for repo access
+                      # This token has read access to the repo by default
+                      ADO_PAT="$(System.AccessToken)"
+
+                      # Create the repo credential secret for ArgoCD
+                      kubectl apply -f - <<EOF
+                      apiVersion: v1
+                      kind: Secret
+                      metadata:
+                        name: ado-repo-creds
+                        namespace: $(ARGOCD_NAMESPACE)
+                        labels:
+                          argocd.argoproj.io/secret-type: repository
+                      type: Opaque
+                      stringData:
+                        type: git
+                        url: $(ADO_REPO_URL)
+                        username: "ado-build-service"
+                        password: "${ADO_PAT}"
+                      EOF
+
+                      echo "ADO repo credentials configured in ArgoCD."
+
+  # ── Stage 3: Register ArgoCD Applications ────────────────────────────
+  - stage: RegisterApps
+    displayName: "Register ArgoCD Applications"
+    dependsOn:
+      - InstallArgoCD
+      - ConfigureRepo
+    condition: |
+      and(
+        not(failed()),
+        in('${{ parameters.action }}', 'install', 'register-apps')
+      )
+    jobs:
+      - deployment: RegisterAppsJob
+        displayName: "Apply ArgoCD Project & Applications"
+        environment: "${{ parameters.environment }}-infra"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "Create ArgoCD Project and Applications"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER_NAME) \
+                        --overwrite-existing
+
+                      # Wait for ArgoCD CRDs to be available
+                      echo "Waiting for ArgoCD CRDs..."
+                      for i in $(seq 1 30); do
+                        if kubectl get crd applications.argoproj.io &>/dev/null; then
+                          echo "ArgoCD CRDs are ready."
+                          break
+                        fi
+                        echo "  Waiting... (attempt ${i}/30)"
+                        sleep 10
+                      done
+
+                      # Apply the ArgoCD Project
+                      echo "Creating ArgoCD Project..."
+                      kubectl apply -f argocd/argocd-project.yaml
+
+                      # Apply ArgoCD Applications based on environment
+                      ENV="${{ parameters.environment }}"
+
+                      case "${ENV}" in
+                        dev)
+                          echo "Registering dev application..."
+                          kubectl apply -f argocd/application-dev.yaml
+                          ;;
+                        staging)
+                          echo "Registering staging application..."
+                          kubectl apply -f argocd/application-staging.yaml
+                          ;;
+                        prod)
+                          echo "Registering dev + staging + prod applications..."
+                          kubectl apply -f argocd/application-dev.yaml
+                          kubectl apply -f argocd/application-staging.yaml
+                          kubectl apply -f argocd/application-prod.yaml
+                          ;;
+                      esac
+
+                      echo ""
+                      echo "=== ArgoCD Applications ==="
+                      kubectl get applications -n $(ARGOCD_NAMESPACE)
+
+                - task: AzureCLI@2
+                  displayName: "Verify ArgoCD health"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER_NAME) \
+                        --overwrite-existing
+
+                      echo "=== ArgoCD Pods ==="
+                      kubectl get pods -n $(ARGOCD_NAMESPACE)
+
+                      echo ""
+                      echo "=== ArgoCD Server Service ==="
+                      kubectl get svc argocd-server -n $(ARGOCD_NAMESPACE)
+
+                      echo ""
+                      echo "=== ArgoCD Applications ==="
+                      kubectl get applications -n $(ARGOCD_NAMESPACE) -o wide || true
+
+                      echo ""
+                      echo "=== ArgoCD App Sync Status ==="
+                      for app in $(kubectl get applications -n $(ARGOCD_NAMESPACE) -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true); do
+                        STATUS=$(kubectl get application "${app}" -n $(ARGOCD_NAMESPACE) -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+                        HEALTH=$(kubectl get application "${app}" -n $(ARGOCD_NAMESPACE) -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+                        echo "  ${app}: Sync=${STATUS}, Health=${HEALTH}"
+                      done
+
+  # ── Stage 4: Uninstall ArgoCD (if requested) ──────────────────────────
+  - stage: UninstallArgoCD
+    displayName: "Uninstall ArgoCD"
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'uninstall'))
+    jobs:
+      - deployment: UninstallArgoCDJob
+        displayName: "Helm uninstall ArgoCD"
+        environment: "${{ parameters.environment }}-destroy"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: "Remove ArgoCD from AKS"
+                  inputs:
+                    azureSubscription: "azure-service-connection"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      az aks get-credentials \
+                        --resource-group $(RESOURCE_GROUP) \
+                        --name $(AKS_CLUSTER_NAME) \
+                        --overwrite-existing
+
+                      if ! command -v helm &>/dev/null; then
+                        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+                      fi
+
+                      # Delete all ArgoCD applications first
+                      echo "Removing ArgoCD Applications..."
+                      kubectl delete applications --all -n $(ARGOCD_NAMESPACE) --timeout=120s || true
+
+                      # Uninstall ArgoCD Helm release
+                      echo "Uninstalling ArgoCD Helm release..."
+                      helm uninstall argocd -n $(ARGOCD_NAMESPACE) --wait || true
+
+                      # Clean up namespace
+                      echo "Deleting ArgoCD namespace..."
+                      kubectl delete namespace $(ARGOCD_NAMESPACE) --timeout=120s || true
+
+                      echo "ArgoCD uninstalled successfully."

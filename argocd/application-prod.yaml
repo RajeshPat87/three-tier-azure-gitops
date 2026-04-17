@@ -4,10 +4,10 @@ metadata:
   name: three-tier-app-prod
   namespace: argocd
 spec:
-  project: default
+  project: three-tier-gitops
 
   source:
-    repoURL: https://github.com/RajeshPatibandla1987/three-tier-azure-gitops.git
+    repoURL: https://dev.azure.com/RajeshPatibandla1987/three-tier-azure-gitops/_git/three-tier-gitops-app
     targetRevision: main
     path: k8s/overlays/prod
 
@@ -17,7 +17,7 @@ spec:
 
   syncPolicy:
     automated:
-      prune: true
+      prune: false
       selfHeal: true
     syncOptions:
       - CreateNamespace=true

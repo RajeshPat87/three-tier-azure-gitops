@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: three-tier-app-dev
+  name: three-tier-app-staging
   namespace: argocd
 spec:
   project: three-tier-gitops
@@ -9,7 +9,7 @@ spec:
   source:
     repoURL: https://dev.azure.com/RajeshPatibandla1987/three-tier-azure-gitops/_git/three-tier-gitops-app
     targetRevision: main
-    path: k8s/overlays/dev
+    path: k8s/overlays/staging
 
   destination:
     server: https://kubernetes.default.svc

@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# App Deployment Pipeline – build, push to ACR, deploy to AKS
+# App Deployment Pipeline (GitOps) – Build → Push to ACR → Update manifests
+# ArgoCD detects the manifest change and syncs to AKS automatically.
 # ---------------------------------------------------------------------------
 trigger:
   branches:
@@ -9,7 +10,6 @@ trigger:
     include:
       - frontend/**
       - backend/**
-      - k8s/**
 
 parameters:
   - name: environment
@@ -31,9 +31,9 @@ variables:
   - name: ACR_LOGIN_SERVER
     value: "$(ACR_NAME).azurecr.io"
   - name: AKS_CLUSTER_NAME
-    value: "threetier-dev-aks"
+    value: "threetier-${{ parameters.environment }}-aks"
   - name: RESOURCE_GROUP
-    value: "threetier-dev-rg"
+    value: "threetier-${{ parameters.environment }}-rg"
   - name: IMAGE_TAG
     ${{ if eq(parameters.imageTag, '') }}:
       value: "$(Build.BuildId)"
@@ -46,7 +46,7 @@ pool:
   vmImage: "ubuntu-latest"
 
 stages:
-  # ── Stage 1: Build & Push Images ──────────────────────────────────────
+  # ── Stage 1: Build & Push Images to ACR ────────────────────────────────
   - stage: Build
     displayName: "Build & Push to ACR"
     jobs:
@@ -74,7 +74,6 @@ stages:
 
                 docker push "${FULL_TAG}"
 
-                # Also tag as latest
                 docker tag "${FULL_TAG}" "$(ACR_LOGIN_SERVER)/backend:latest"
                 docker push "$(ACR_LOGIN_SERVER)/backend:latest"
 
@@ -110,72 +109,131 @@ stages:
                 echo "##vso[task.setvariable variable=FRONTEND_IMAGE;isOutput=true]${FULL_TAG}"
             name: frontendBuild
 
-  # ── Stage 2: Deploy to AKS ────────────────────────────────────────────
-  - stage: Deploy
-    displayName: "Deploy to AKS (${{ parameters.environment }})"
+  # ── Stage 2: Update K8s Manifests (GitOps – commit image tags) ────────
+  # ArgoCD watches the repo; when it sees updated image tags, it syncs.
+  - stage: UpdateManifests
+    displayName: "Update Manifests (GitOps)"
     dependsOn: Build
     jobs:
-      - deployment: DeployToAKS
-        displayName: "Kustomize → AKS"
+      - deployment: CommitImageTags
+        displayName: "Commit image tags → ArgoCD syncs"
         environment: "${{ parameters.environment }}-app"
         strategy:
           runOnce:
             deploy:
               steps:
                 - checkout: self
+                  persistCredentials: true
 
-                - task: AzureCLI@2
-                  displayName: "Deploy with Kustomize"
+                - task: Bash@3
+                  displayName: "Update kustomization with new image tags"
                   inputs:
-                    azureSubscription: "azure-service-connection"
-                    scriptType: bash
-                    scriptLocation: inlineScript
-                    inlineScript: |
+                    targetType: inline
+                    script: |
                       set -euo pipefail
-
-                      # Get AKS credentials
-                      az aks get-credentials \
-                        --resource-group $(RESOURCE_GROUP) \
-                        --name $(AKS_CLUSTER_NAME) \
-                        --overwrite-existing
 
                       # Install kustomize
                       curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
                       sudo mv kustomize /usr/local/bin/
 
-                      # Update image tags in kustomization
                       cd $(KUSTOMIZE_OVERLAY)
 
+                      # Update image references in kustomization.yaml
                       kustomize edit set image \
-                        "ACRNAME.azurecr.io/backend=$(ACR_LOGIN_SERVER)/backend:$(IMAGE_TAG)" \
-                        "ACRNAME.azurecr.io/frontend=$(ACR_LOGIN_SERVER)/frontend:$(IMAGE_TAG)"
+                        "ACRNAME.azurecr.io/three-tier-backend=$(ACR_LOGIN_SERVER)/backend:$(IMAGE_TAG)" \
+                        "ACRNAME.azurecr.io/three-tier-frontend=$(ACR_LOGIN_SERVER)/frontend:$(IMAGE_TAG)"
 
-                      # Apply to cluster
-                      kustomize build . | kubectl apply -f -
+                      echo "Updated kustomization.yaml:"
+                      cat kustomization.yaml
 
-                      # Wait for rollout
-                      kubectl rollout status deployment/backend  -n three-tier-app --timeout=300s || true
-                      kubectl rollout status deployment/frontend -n three-tier-app --timeout=300s || true
-
-                - task: AzureCLI@2
-                  displayName: "Verify deployment health"
+                - task: Bash@3
+                  displayName: "Commit & push updated manifests"
                   inputs:
-                    azureSubscription: "azure-service-connection"
-                    scriptType: bash
-                    scriptLocation: inlineScript
-                    inlineScript: |
+                    targetType: inline
+                    script: |
                       set -euo pipefail
 
-                      az aks get-credentials \
-                        --resource-group $(RESOURCE_GROUP) \
-                        --name $(AKS_CLUSTER_NAME) \
-                        --overwrite-existing
+                      git config user.email "ado-pipeline@dev.azure.com"
+                      git config user.name "Azure DevOps Pipeline"
 
-                      echo "=== Pod Status ==="
-                      kubectl get pods -n three-tier-app -o wide
+                      git add k8s/
 
-                      echo "=== Services ==="
-                      kubectl get svc -n three-tier-app
+                      # Only commit if there are changes
+                      if git diff --cached --quiet; then
+                        echo "No manifest changes to commit."
+                      else
+                        git commit -m "chore(gitops): update ${{ parameters.environment }} images to tag $(IMAGE_TAG) [skip ci]
 
-                      echo "=== Ingress ==="
-                      kubectl get ingress -n three-tier-app
+                      Pipeline: $(Build.DefinitionName)
+                      Build: $(Build.BuildNumber)
+                      Environment: ${{ parameters.environment }}"
+
+                        git push origin HEAD:main
+                        echo "Manifests committed. ArgoCD will auto-sync shortly."
+                      fi
+
+  # ── Stage 3: Verify ArgoCD Sync ──────────────────────────────────────
+  - stage: VerifySync
+    displayName: "Verify ArgoCD Sync (${{ parameters.environment }})"
+    dependsOn: UpdateManifests
+    jobs:
+      - job: WaitForSync
+        displayName: "Wait for ArgoCD sync"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Monitor ArgoCD sync status"
+            inputs:
+              azureSubscription: "azure-service-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                az aks get-credentials \
+                  --resource-group $(RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER_NAME) \
+                  --overwrite-existing
+
+                APP_NAME="three-tier-app-${{ parameters.environment }}"
+                ARGOCD_NS="argocd"
+                MAX_WAIT=300
+                INTERVAL=15
+                ELAPSED=0
+
+                echo "Waiting for ArgoCD to sync application '${APP_NAME}'..."
+
+                while [[ ${ELAPSED} -lt ${MAX_WAIT} ]]; do
+                  SYNC_STATUS=$(kubectl get application "${APP_NAME}" -n "${ARGOCD_NS}" \
+                    -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+                  HEALTH_STATUS=$(kubectl get application "${APP_NAME}" -n "${ARGOCD_NS}" \
+                    -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+
+                  echo "  [${ELAPSED}s] Sync: ${SYNC_STATUS}, Health: ${HEALTH_STATUS}"
+
+                  if [[ "${SYNC_STATUS}" == "Synced" && "${HEALTH_STATUS}" == "Healthy" ]]; then
+                    echo ""
+                    echo "ArgoCD sync complete! Application is healthy."
+                    break
+                  fi
+
+                  sleep ${INTERVAL}
+                  ELAPSED=$((ELAPSED + INTERVAL))
+                done
+
+                if [[ ${ELAPSED} -ge ${MAX_WAIT} ]]; then
+                  echo "##vso[task.logissue type=warning]ArgoCD sync did not complete within ${MAX_WAIT}s."
+                  echo "Current status: Sync=${SYNC_STATUS}, Health=${HEALTH_STATUS}"
+                  echo "ArgoCD may still be syncing. Check the ArgoCD dashboard."
+                fi
+
+                echo ""
+                echo "=== ArgoCD Application Details ==="
+                kubectl get application "${APP_NAME}" -n "${ARGOCD_NS}" -o yaml 2>/dev/null | head -50 || true
+
+                echo ""
+                echo "=== App Pods ==="
+                kubectl get pods -n three-tier-app -o wide 2>/dev/null || true
+
+                echo ""
+                echo "=== App Services ==="
+                kubectl get svc -n three-tier-app 2>/dev/null || true

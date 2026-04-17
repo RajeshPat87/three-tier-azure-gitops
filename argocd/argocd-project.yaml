@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: three-tier-gitops
+  namespace: argocd
+spec:
+  description: "Three-tier Azure GitOps application project"
+
+  # Source repos ArgoCD is allowed to pull from
+  sourceRepos:
+    - "https://dev.azure.com/RajeshPatibandla1987/three-tier-azure-gitops/_git/three-tier-gitops-app"
+
+  destinations:
+    - namespace: three-tier-app
+      server: https://kubernetes.default.svc
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+
+  # Allow all cluster-scoped resources needed by the app
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Allow all namespace-scoped resources
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: "*"
+    - group: apps
+      kind: "*"
+    - group: networking.k8s.io
+      kind: "*"
+    - group: batch
+      kind: "*"
+
+  # Orphaned resource monitoring
+  orphanedResources:
+    warn: true
