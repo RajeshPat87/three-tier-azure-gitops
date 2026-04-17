@@ -1,23 +1,23 @@
 # ────────────────────────────────────────────────────────────
-# Azure Container Registry
+# Azure Container Registry  (Basic SKU for free-tier accounts)
 # ────────────────────────────────────────────────────────────
 resource "azurerm_container_registry" "main" {
   name                = "acr${var.project_name}${var.environment}"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
-  sku                 = "Standard"
+  sku                 = "Basic"
   admin_enabled       = false
 }
 
 # ────────────────────────────────────────────────────────────
-# Azure Kubernetes Service
+# Azure Kubernetes Service  (free tier, no version pin)
 # ────────────────────────────────────────────────────────────
 resource "azurerm_kubernetes_cluster" "main" {
   name                = "aks-${var.project_name}-${var.environment}"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   dns_prefix          = "${var.project_name}-${var.environment}"
-  kubernetes_version  = "1.29"
+  sku_tier            = "Free"
 
   default_node_pool {
     name           = "default"

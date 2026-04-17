@@ -31,11 +31,11 @@ variable "db_admin_password" {
 variable "aks_node_count" {
   description = "Number of AKS worker nodes"
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "aks_vm_size" {
   description = "VM size for AKS nodes"
   type        = string
-  default     = "Standard_DS2_v2"
+  default     = "Standard_B2s"
 }
