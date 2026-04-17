@@ -96,12 +96,16 @@ stages:
                 curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0 && break
                 echo "Retry $i..." && sleep 5
               done
-            displayName: "Install Trivy"
+            displayName: "Install Trivy (backend)"
             continueOnError: true
 
           - script: |
-              trivy image --exit-code 1 --severity HIGH,CRITICAL \
-                --no-progress three-tier-backend:pr-$(Build.BuildId)
+              if command -v trivy &>/dev/null; then
+                trivy image --exit-code 1 --severity HIGH,CRITICAL \
+                  --no-progress three-tier-backend:pr-$(Build.BuildId)
+              else
+                echo "##[warning]Trivy not available, skipping backend image scan"
+              fi
             displayName: "Trivy scan backend"
             continueOnError: true
 
@@ -118,12 +122,16 @@ stages:
                 curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.50.0 && break
                 echo "Retry $i..." && sleep 5
               done
-            displayName: "Install Trivy"
+            displayName: "Install Trivy (frontend)"
             continueOnError: true
 
           - script: |
-              trivy image --exit-code 1 --severity HIGH,CRITICAL \
-                --no-progress three-tier-frontend:pr-$(Build.BuildId)
+              if command -v trivy &>/dev/null; then
+                trivy image --exit-code 1 --severity HIGH,CRITICAL \
+                  --no-progress three-tier-frontend:pr-$(Build.BuildId)
+              else
+                echo "##[warning]Trivy not available, skipping frontend image scan"
+              fi
             displayName: "Trivy scan frontend"
             continueOnError: true
 
