@@ -34,16 +34,25 @@ spec:
               memory: 256Mi
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /api/readyz
               port: 3000
             initialDelaySeconds: 10
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /api/health
+              path: /api/livez
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 20
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /api/livez
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 10
       restartPolicy: Always
 ---
 apiVersion: v1

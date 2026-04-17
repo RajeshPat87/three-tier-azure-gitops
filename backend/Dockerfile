@@ -6,6 +6,8 @@ RUN npm ci --only=production --silent
 
 # --- Stage 2: Production image ---
 FROM node:20-alpine
+ARG APP_VERSION=1.1.0
+ENV APP_VERSION=${APP_VERSION}
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
 
