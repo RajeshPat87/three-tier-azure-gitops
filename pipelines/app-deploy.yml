@@ -163,6 +163,8 @@ stages:
 
                 - task: Bash@3
                   displayName: "Commit & push updated manifests"
+                  env:
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
                   inputs:
                     targetType: inline
                     script: |
@@ -170,6 +172,10 @@ stages:
 
                       git config user.email "ado-pipeline@dev.azure.com"
                       git config user.name "Azure DevOps Pipeline"
+
+                      # Use System.AccessToken for push auth (avoids GenericContribute permission issues)
+                      git -c http.extraheader="Authorization: Bearer $SYSTEM_ACCESSTOKEN" fetch origin main
+                      git checkout -B main origin/main
 
                       git add k8s/
 
@@ -183,7 +189,7 @@ stages:
                       Build: $(Build.BuildNumber)
                       Environment: ${{ parameters.environment }}"
 
-                        git push origin HEAD:main
+                        git -c http.extraheader="Authorization: Bearer $SYSTEM_ACCESSTOKEN" push origin HEAD:main
                         echo "Manifests committed. ArgoCD will auto-sync shortly."
                       fi
 
