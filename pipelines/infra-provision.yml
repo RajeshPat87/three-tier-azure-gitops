@@ -173,10 +173,10 @@ stages:
                         terraform import $TF_VARS azurerm_postgresql_flexible_server.main "$PG_ID" || true
 
                         # Also import the database if it exists
-                        DB_ID="${PG_ID}/databases/threetier"
-                        DB_EXISTS=$(az postgres flexible-server db show --server-name "$PG_NAME" --resource-group "$RG" --database-name threetier --query id -o tsv 2>/dev/null || true)
+                        DB_ID="${PG_ID}/databases/appdb"
+                        DB_EXISTS=$(az postgres flexible-server db show --server-name "$PG_NAME" --resource-group "$RG" --database-name appdb --query id -o tsv 2>/dev/null || true)
                         if [ -n "$DB_EXISTS" ]; then
-                          echo "PG database found — importing..."
+                          echo "PG database 'appdb' found — importing..."
                           terraform state rm azurerm_postgresql_flexible_server_database.appdb 2>/dev/null || true
                           terraform import $TF_VARS azurerm_postgresql_flexible_server_database.appdb "$DB_ID" || true
                         fi
