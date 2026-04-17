@@ -150,6 +150,9 @@ stages:
                         -backend-config="container_name=$(TF_BACKEND_CONTAINER_NAME)" \
                         -backend-config="key=$(TF_STATE_KEY)"
 
+                      # Purge any soft-deleted Key Vault to avoid name conflicts
+                      az keyvault purge --name "kv-threetier-${{ parameters.environment }}" 2>/dev/null || true
+
                       terraform apply -auto-approve -input=false \
                         "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/tfplan"
 

@@ -1,7 +1,7 @@
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "eastus"
+  default     = "centralus"
 }
 
 variable "project_name" {
