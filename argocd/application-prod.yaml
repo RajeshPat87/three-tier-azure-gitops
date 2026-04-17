@@ -7,7 +7,7 @@ spec:
   project: three-tier-gitops
 
   source:
-    repoURL: https://dev.azure.com/RajeshPatibandla1987/three-tier-azure-gitops/_git/three-tier-gitops-app
+    repoURL: https://github.com/RajeshPat87/three-tier-azure-gitops.git
     targetRevision: main
     path: k8s/overlays/prod
 
