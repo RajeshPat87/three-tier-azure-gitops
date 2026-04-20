@@ -13,6 +13,12 @@ spec:
   destinations:
     - namespace: three-tier-app
       server: https://kubernetes.default.svc
+    - namespace: three-tier-dev
+      server: https://kubernetes.default.svc
+    - namespace: three-tier-staging
+      server: https://kubernetes.default.svc
+    - namespace: three-tier-prod
+      server: https://kubernetes.default.svc
     - namespace: argocd
       server: https://kubernetes.default.svc
 

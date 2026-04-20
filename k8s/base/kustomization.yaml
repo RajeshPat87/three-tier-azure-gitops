@@ -4,8 +4,5 @@ namespace: three-tier-app
 resources:
   - namespace.yaml
   - configmap.yaml
-  - secret.yaml
   - backend-deployment.yaml
   - frontend-deployment.yaml
-  - ingress.yaml
-  - migration-job.yaml

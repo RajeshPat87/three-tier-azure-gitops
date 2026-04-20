@@ -13,7 +13,7 @@ spec:
 
   destination:
     server: https://kubernetes.default.svc
-    namespace: three-tier-app
+    namespace: three-tier-dev
 
   syncPolicy:
     automated:
