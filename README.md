@@ -393,6 +393,37 @@ Downloads and installs DevOps tools with SHA256 checksum verification:
 
 ---
 
+
+Notes : 
+
+## **Secure Connectivity Commands (Azure PostgreSQL & AKS)**
+
+### **1. Launch Temporary Debug Pod**
+```bash
+kubectl run pg-debug-client --rm -it --image=alpine:latest --namespace=three-tier-dev -- sh
+```
+
+### **2. Install PostgreSQL Client**
+```bash
+apk add --no-cache postgresql-client [cite: 211, 283]
+```
+
+### **3. Connect to PostgreSQL Flexible Server**
+```bash
+psql 'host=psql-threetier-dev.postgres.database.azure.com port=5432 dbname=appdb user=pgadmin password=<YOUR_PASSWORD> sslmode=require' [cite: 309, 310]
+```
+
+### **4. Verification Commands (Internal REPL)**
+```sql
+-- List tables
+\dt
+
+-- Basic Query
+SELECT * FROM items;
+
+-- Exit
+\q
+```
 ## License
 
 This project is maintained by the DevOps team for internal use.
