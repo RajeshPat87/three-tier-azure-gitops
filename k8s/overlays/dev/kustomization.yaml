@@ -37,7 +37,7 @@ resources:
 images:
 - name: ACRNAME.azurecr.io/three-tier-backend
   newName: acrthreetierdev.azurecr.io/backend
-  newTag: "265"
+  newTag: "267"
 - name: ACRNAME.azurecr.io/three-tier-frontend
   newName: acrthreetierdev.azurecr.io/frontend
-  newTag: "265"
+  newTag: "267"
