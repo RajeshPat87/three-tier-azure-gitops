@@ -35,9 +35,9 @@ patches:
 resources:
 - ../../base
 images:
-- name: ACRNAME.azurecr.io/backend
+- name: ACRNAME.azurecr.io/three-tier-backend
   newName: acrthreetierdev.azurecr.io/backend
   newTag: "262"
-- name: ACRNAME.azurecr.io/frontend
+- name: ACRNAME.azurecr.io/three-tier-frontend
   newName: acrthreetierdev.azurecr.io/frontend
   newTag: "262"
